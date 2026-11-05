@@ -595,7 +595,7 @@ namespace SuperFXEngine
             }
             else if (currentTool == EditorTool.Rotate)
             {
-                int segments = 20;
+                int segments = 24;
                 float radius = 1.3f;
 
                 for (int i = 0; i < segments; i++)
@@ -603,25 +603,29 @@ namespace SuperFXEngine
                     float a1 = (float)(i * 2 * Math.PI / segments);
                     float a2 = (float)((i + 1) * 2 * Math.PI / segments);
 
+                    // X Ring: Rotates around X axis (Y-Z plane)
                     Vector3 rx1 = origin + yDir * (float)Math.Cos(a1) * radius + zDir * (float)Math.Sin(a1) * radius;
                     Vector3 rx2 = origin + yDir * (float)Math.Cos(a2) * radius + zDir * (float)Math.Sin(a2) * radius;
                     Vector3 prx1 = ProjectPoint(rx1), prx2 = ProjectPoint(rx2);
                     if (prx1.X >= 0 && prx2.X >= 0) DrawLine((int)prx1.X, (int)prx1.Y, (int)prx2.X, (int)prx2.Y, colX);
 
+                    // Y Ring: Rotates around Y axis (X-Z plane)
                     Vector3 ry1 = origin + xDir * (float)Math.Cos(a1) * radius + zDir * (float)Math.Sin(a1) * radius;
                     Vector3 ry2 = origin + xDir * (float)Math.Cos(a2) * radius + zDir * (float)Math.Sin(a2) * radius;
                     Vector3 pry1 = ProjectPoint(ry1), pry2 = ProjectPoint(ry2);
                     if (pry1.X >= 0 && pry2.X >= 0) DrawLine((int)pry1.X, (int)pry1.Y, (int)pry2.X, (int)pry2.Y, colY);
 
+                    // Z Ring: Rotates around Z axis (X-Y plane)
                     Vector3 rz1 = origin + xDir * (float)Math.Cos(a1) * radius + yDir * (float)Math.Sin(a1) * radius;
                     Vector3 rz2 = origin + xDir * (float)Math.Cos(a2) * radius + yDir * (float)Math.Sin(a2) * radius;
                     Vector3 prz1 = ProjectPoint(rz1), prz2 = ProjectPoint(rz2);
                     if (prz1.X >= 0 && prz2.X >= 0) DrawLine((int)prz1.X, (int)prz1.Y, (int)prz2.X, (int)prz2.Y, colZ);
                 }
 
+                // Handle indicator balls placed directly on their respective rotation rings
                 Vector3 pTipX = ProjectPoint(origin + yDir * radius);
-                Vector3 pTipY = ProjectPoint(origin + xDir * radius);
-                Vector3 pTipZ = ProjectPoint(origin + zDir * radius);
+                Vector3 pTipY = ProjectPoint(origin + zDir * radius);
+                Vector3 pTipZ = ProjectPoint(origin + xDir * radius);
 
                 if (pTipX.X >= 0) DrawFilledCircle((int)pTipX.X, (int)pTipX.Y, 5, colX);
                 if (pTipY.X >= 0) DrawFilledCircle((int)pTipY.X, (int)pTipY.Y, 5, colY);
@@ -930,7 +934,7 @@ namespace SuperFXEngine
 
         public SuperFXForm()
         {
-            Text = "Super FX Studio 3D [v1.47 - Gizmo Fix]";
+            Text = "Super FX Studio 3D [v1.51 - Rotation Ring Balls Fix]";
             ClientSize = new Size(1100, 855);
             DoubleBuffered = true;
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -993,16 +997,7 @@ namespace SuperFXEngine
                     }
 
                     if (btnToggleOnion.Contains(e.Location)) onionSkinEnabled = !onionSkinEnabled;
-                    if (btnAddKey.Contains(e.Location))
-                    {
-                        if (selectedMesh != null)
-                        {
-                            currentClip.Keyframes.RemoveAll(k => k.FrameIndex == currentFrame);
-                            currentClip.Keyframes.Add(new Keyframe(currentFrame, selectedMesh.Position, selectedMesh.Rotation, selectedMesh.Scale));
-                            currentClip.Keyframes = currentClip.Keyframes.OrderBy(k => k.FrameIndex).ToList();
-                        }
-                        else MessageBox.Show("Select an object first.");
-                    }
+                    if (btnAddKey.Contains(e.Location)) RecordKeyframeAtCurrentFrame();
                     if (btnSaveAnim.Contains(e.Location)) SaveAnimationToFile();
                     if (btnLoadAnim.Contains(e.Location)) LoadAnimationFromFile();
 
@@ -1066,12 +1061,14 @@ namespace SuperFXEngine
                     if (selectedMesh != null)
                     {
                         float step = 0.5f;
-                        if (btnInspectorSubX.Contains(e.Location)) selectedMesh.Position.X -= step;
-                        if (btnInspectorAddX.Contains(e.Location)) selectedMesh.Position.X += step;
-                        if (btnInspectorSubY.Contains(e.Location)) selectedMesh.Position.Y -= step;
-                        if (btnInspectorAddY.Contains(e.Location)) selectedMesh.Position.Y += step;
-                        if (btnInspectorSubZ.Contains(e.Location)) selectedMesh.Position.Z -= step;
-                        if (btnInspectorAddZ.Contains(e.Location)) selectedMesh.Position.Z += step;
+                        bool changed = false;
+                        if (btnInspectorSubX.Contains(e.Location)) { selectedMesh.Position.X -= step; changed = true; }
+                        if (btnInspectorAddX.Contains(e.Location)) { selectedMesh.Position.X += step; changed = true; }
+                        if (btnInspectorSubY.Contains(e.Location)) { selectedMesh.Position.Y -= step; changed = true; }
+                        if (btnInspectorAddY.Contains(e.Location)) { selectedMesh.Position.Y += step; changed = true; }
+                        if (btnInspectorSubZ.Contains(e.Location)) { selectedMesh.Position.Z -= step; changed = true; }
+                        if (btnInspectorAddZ.Contains(e.Location)) { selectedMesh.Position.Z += step; changed = true; }
+                        if (changed) RecordKeyframeAtCurrentFrame();
                     }
 
                     if (btnLoadTex.Contains(e.Location)) LoadImageTextureFromFile();
@@ -1155,6 +1152,10 @@ namespace SuperFXEngine
                 if (e.Button == MouseButtons.Right) isRightMouseDown = false;
                 if (e.Button == MouseButtons.Left)
                 {
+                    if (isGizmoDragging && selectedMesh != null)
+                    {
+                        RecordKeyframeAtCurrentFrame();
+                    }
                     isGizmoDragging = false;
                     activeGizmoAxis = GizmoAxis.None;
                 }
@@ -1217,9 +1218,10 @@ namespace SuperFXEngine
                     }
                     else if (CurrentTool == EditorTool.Rotate)
                     {
-                        if (activeGizmoAxis == GizmoAxis.X) selectedMesh.Rotation.X += delta * 0.2f;
-                        if (activeGizmoAxis == GizmoAxis.Y) selectedMesh.Rotation.Y += delta * 0.2f;
-                        if (activeGizmoAxis == GizmoAxis.Z) selectedMesh.Rotation.Z += delta * 0.2f;
+                        float rotSpeed = 0.05f;
+                        if (activeGizmoAxis == GizmoAxis.X) selectedMesh.Rotation.X += delta * rotSpeed;
+                        if (activeGizmoAxis == GizmoAxis.Y) selectedMesh.Rotation.Y += delta * rotSpeed;
+                        if (activeGizmoAxis == GizmoAxis.Z) selectedMesh.Rotation.Z += delta * rotSpeed;
                     }
                     else if (CurrentTool == EditorTool.Scale)
                     {
@@ -1237,6 +1239,14 @@ namespace SuperFXEngine
             {
                 while (!NativeMessageWaiting()) { UpdateEngine(); Invalidate(); }
             };
+        }
+
+        private void RecordKeyframeAtCurrentFrame()
+        {
+            if (selectedMesh == null) return;
+            currentClip.Keyframes.RemoveAll(k => k.FrameIndex == currentFrame);
+            currentClip.Keyframes.Add(new Keyframe(currentFrame, selectedMesh.Position, selectedMesh.Rotation, selectedMesh.Scale));
+            currentClip.Keyframes = currentClip.Keyframes.OrderBy(k => k.FrameIndex).ToList();
         }
 
         private List<(Mesh mesh, int depth)> GetHierarchyDisplayList()
@@ -1305,9 +1315,10 @@ namespace SuperFXEngine
             PointF pX, pY, pZ;
             if (CurrentTool == EditorTool.Rotate)
             {
+                // Align tip projections with exact ring points on the Y-Z, X-Z, and X-Y planes respectively
                 pX = WorldToScreen(origin + yDir * 1.3f);
-                pY = WorldToScreen(origin + xDir * 1.3f);
-                pZ = WorldToScreen(origin + zDir * 1.3f);
+                pY = WorldToScreen(origin + zDir * 1.3f);
+                pZ = WorldToScreen(origin + xDir * 1.3f);
             }
             else
             {
@@ -1316,12 +1327,12 @@ namespace SuperFXEngine
                 pZ = WorldToScreen(origin + zDir * handleLength);
             }
 
-            if (pX.X < 0) return GizmoAxis.None;
+            if (pX.X < 0 && pY.X < 0 && pZ.X < 0) return GizmoAxis.None;
 
             float grabRadius = 14.0f;
-            if (Math.Abs(mousePos.X - pX.X) <= grabRadius && Math.Abs(mousePos.Y - pX.Y) <= grabRadius) return GizmoAxis.X;
-            if (Math.Abs(mousePos.Y - pY.Y) <= grabRadius && Math.Abs(mousePos.X - pY.X) <= grabRadius) return GizmoAxis.Y;
-            if (Math.Abs(mousePos.X - pZ.X) <= grabRadius && Math.Abs(mousePos.Y - pZ.Y) <= grabRadius) return GizmoAxis.Z;
+            if (pX.X >= 0 && Math.Abs(mousePos.X - pX.X) <= grabRadius && Math.Abs(mousePos.Y - pX.Y) <= grabRadius) return GizmoAxis.X;
+            if (pY.X >= 0 && Math.Abs(mousePos.X - pY.X) <= grabRadius && Math.Abs(mousePos.Y - pY.Y) <= grabRadius) return GizmoAxis.Y;
+            if (pZ.X >= 0 && Math.Abs(mousePos.X - pZ.X) <= grabRadius && Math.Abs(mousePos.Y - pZ.Y) <= grabRadius) return GizmoAxis.Z;
 
             return GizmoAxis.None;
         }
@@ -1433,8 +1444,7 @@ namespace SuperFXEngine
                 if (currentFrame > currentClip.TotalFrames) currentFrame = 0;
             }
 
-            // Evaluate animation for selected object if animated
-            if (selectedMesh != null && currentClip.Keyframes.Count > 0 && CurrentGameMode == GameMode.Editor)
+            if (selectedMesh != null && currentClip.Keyframes.Count > 0 && CurrentGameMode == GameMode.Editor && !isGizmoDragging)
             {
                 currentClip.Evaluate(currentFrame, out selectedMesh.Position, out selectedMesh.Rotation, out selectedMesh.Scale);
             }
@@ -1678,7 +1688,7 @@ namespace SuperFXEngine
                 // 8. Console Log
                 DrawGroupBox(g, new Rectangle(14, 554, 287, 252), "CONSOLE LOG");
                 g.FillRectangle(Brushes.Black, 20, 570, 275, 226);
-                g.DrawString("SUPFX_OS v1.47 [Gizmo Fix Applied]\n> Z-axis line drawing & hit-testing corrected\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
+                g.DrawString("SUPFX_OS v1.51 [Rotation Ring Balls Fixed]\n> Z-rotation ball snapped to Z-ring plane\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
 
                 Rectangle statusRect = new Rectangle(0, ClientSize.Height - 22, ClientSize.Width, 22);
                 g.FillRectangle(bgBrush, statusRect);

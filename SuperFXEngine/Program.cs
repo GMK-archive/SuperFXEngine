@@ -881,7 +881,7 @@ namespace SuperFXEngine
             Color.Cyan, Color.DodgerBlue, Color.Magenta, Color.White, Color.DarkGray
         };
 
-        // UI Layout Rectangles (Cleanly spaced within the 310px wide toolbox panel)
+        // UI Layout Rectangles
         private Rectangle btnMove = new Rectangle(20, 42, 85, 22);
         private Rectangle btnRotate = new Rectangle(110, 42, 85, 22);
         private Rectangle btnScale = new Rectangle(200, 42, 95, 22);
@@ -914,20 +914,23 @@ namespace SuperFXEngine
         private Rectangle btnPlayFlight = new Rectangle(110, 444, 85, 22);
         private Rectangle btnPlayPlatform = new Rectangle(200, 444, 95, 22);
 
-        // Separate Animation Window Rectangles (Bottom Panel)
+        // Separate Animation Window Rectangles
         private Rectangle animWindowRect = new Rectangle(330, 725, 740, 120);
-        private Rectangle btnAnimPlay = new Rectangle(342, 750, 75, 24);
-        private Rectangle btnAnimPrev = new Rectangle(422, 750, 40, 24);
-        private Rectangle btnAnimNext = new Rectangle(467, 750, 40, 24);
-        private Rectangle btnAddKey = new Rectangle(512, 750, 90, 24);
-        private Rectangle btnToggleOnion = new Rectangle(612, 750, 105, 24);
-        private Rectangle btnSaveAnim = new Rectangle(727, 750, 85, 24);
-        private Rectangle btnLoadAnim = new Rectangle(817, 750, 85, 24);
+        private Rectangle btnAnimPlay = new Rectangle(342, 750, 65, 24);
+        private Rectangle btnAnimPrev = new Rectangle(412, 750, 32, 24);
+        private Rectangle btnAnimNext = new Rectangle(447, 750, 32, 24);
+        private Rectangle btnSubFrameCount = new Rectangle(484, 750, 20, 24);
+        private Rectangle btnFrameCountLabel = new Rectangle(506, 750, 95, 24);
+        private Rectangle btnAddFrameCount = new Rectangle(603, 750, 20, 24);
+        private Rectangle btnAddKey = new Rectangle(628, 750, 80, 24);
+        private Rectangle btnToggleOnion = new Rectangle(713, 750, 90, 24);
+        private Rectangle btnSaveAnim = new Rectangle(808, 750, 75, 24);
+        private Rectangle btnLoadAnim = new Rectangle(888, 750, 75, 24);
         private Rectangle timelineTrackRect = new Rectangle(342, 786, 716, 44);
 
         public SuperFXForm()
         {
-            Text = "Super FX Studio 3D [v1.44 - Animation Timeline & Onion Skin]";
+            Text = "Super FX Studio 3D [v1.46 - Cutscene Frame Range (Up to 10,000F)]";
             ClientSize = new Size(1100, 855);
             DoubleBuffered = true;
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -969,6 +972,27 @@ namespace SuperFXEngine
                     if (btnAnimPlay.Contains(e.Location)) isPlayingAnimation = !isPlayingAnimation;
                     if (btnAnimPrev.Contains(e.Location)) currentFrame = Math.Max(0, currentFrame - 1);
                     if (btnAnimNext.Contains(e.Location)) currentFrame = Math.Min(currentClip.TotalFrames, currentFrame + 1);
+
+                    // Frame count modifiers (Expanded limit up to 10,000 frames)
+                    if (btnSubFrameCount.Contains(e.Location))
+                    {
+                        currentClip.TotalFrames = Math.Max(5, currentClip.TotalFrames - 50);
+                        if (currentFrame > currentClip.TotalFrames) currentFrame = currentClip.TotalFrames;
+                    }
+                    if (btnAddFrameCount.Contains(e.Location))
+                    {
+                        currentClip.TotalFrames = Math.Min(10000, currentClip.TotalFrames + 50);
+                    }
+                    if (btnFrameCountLabel.Contains(e.Location))
+                    {
+                        string input = Prompt.ShowDialog("Set Total Animation Frames (5 - 10000):", "Cutscene Animation Length", currentClip.TotalFrames.ToString());
+                        if (int.TryParse(input, out int parsedFrames))
+                        {
+                            currentClip.TotalFrames = Math.Max(5, Math.Min(10000, parsedFrames));
+                            if (currentFrame > currentClip.TotalFrames) currentFrame = currentClip.TotalFrames;
+                        }
+                    }
+
                     if (btnToggleOnion.Contains(e.Location)) onionSkinEnabled = !onionSkinEnabled;
                     if (btnAddKey.Contains(e.Location))
                     {
@@ -1462,7 +1486,7 @@ namespace SuperFXEngine
 
             renderer.Clear(Color.FromArgb(255, 12, 12, 32));
 
-            // Render Onion Skin (Previous frame in translucent blue/gray wireframe)
+            // Render Onion Skin
             if (onionSkinEnabled && currentFrame > 0 && selectedMesh != null)
             {
                 Vector3 origPos = selectedMesh.Position;
@@ -1501,26 +1525,32 @@ namespace SuperFXEngine
             {
                 g.FillRectangle(bgBrush, animWindowRect);
                 DrawWin95Bevel(g, animWindowRect, false);
-                DrawGroupBox(g, animWindowRect, "ANIMATION TIMELINE & ONION SKIN WINDOW");
+                DrawGroupBox(g, animWindowRect, "ANIMATION TIMELINE WINDOW (UP TO 10,000 FRAMES)");
 
                 DrawWin95Button(g, btnAnimPlay, isPlayingAnimation ? "Pause ■" : "Play ▶", isPlayingAnimation);
                 DrawWin95Button(g, btnAnimPrev, "◄", false);
                 DrawWin95Button(g, btnAnimNext, "►", false);
+
+                DrawWin95Button(g, btnSubFrameCount, "-", false);
+                DrawWin95Button(g, btnFrameCountLabel, $"Length: {currentClip.TotalFrames}F", false);
+                DrawWin95Button(g, btnAddFrameCount, "+", false);
+
                 DrawWin95Button(g, btnAddKey, "+ Keyframe", false);
                 DrawWin95Button(g, btnToggleOnion, onionSkinEnabled ? "Onion: ON" : "Onion: OFF", onionSkinEnabled);
-                DrawWin95Button(g, btnSaveAnim, "Save Anim...", false);
-                DrawWin95Button(g, btnLoadAnim, "Load Anim...", false);
+                DrawWin95Button(g, btnSaveAnim, "Save...", false);
+                DrawWin95Button(g, btnLoadAnim, "Load...", false);
 
                 // Draw Timeline Track
                 g.FillRectangle(Brushes.White, timelineTrackRect);
                 DrawWin95Bevel(g, timelineTrackRect, true);
 
                 float frameWidth = (float)timelineTrackRect.Width / currentClip.TotalFrames;
-                for (int i = 0; i <= currentClip.TotalFrames; i += 5)
+                int step = Math.Max(1, currentClip.TotalFrames / 6);
+                for (int i = 0; i <= currentClip.TotalFrames; i += step)
                 {
                     int x = timelineTrackRect.Left + (int)(i * frameWidth);
                     g.DrawLine(Pens.Gray, x, timelineTrackRect.Top + 2, x, timelineTrackRect.Top + 8);
-                    g.DrawString(i.ToString(), font, Brushes.Black, x - 6, timelineTrackRect.Top + 10);
+                    g.DrawString(i.ToString(), font, Brushes.Black, x - 10, timelineTrackRect.Top + 10);
                 }
 
                 // Draw Keyframes (◆)
@@ -1650,7 +1680,7 @@ namespace SuperFXEngine
                 // 8. Console Log
                 DrawGroupBox(g, new Rectangle(14, 554, 287, 252), "CONSOLE LOG");
                 g.FillRectangle(Brushes.Black, 20, 570, 275, 226);
-                g.DrawString("SUPFX_OS v1.44 [Animation & Onion Skin]\n> Timeline scrubbing active\n> Onion skin ghosting ready\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
+                g.DrawString("SUPFX_OS v1.46 [Cutscene Frame Range Active]\n> Max frames set to 10,000\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
 
                 Rectangle statusRect = new Rectangle(0, ClientSize.Height - 22, ClientSize.Width, 22);
                 g.FillRectangle(bgBrush, statusRect);
@@ -1714,6 +1744,29 @@ namespace SuperFXEngine
         [StructLayout(LayoutKind.Sequential)]
         private struct NativeMessage { public IntPtr hWnd; public uint msg; public IntPtr wParam; public IntPtr lParam; public uint time; public Point pt; }
         private bool NativeMessageWaiting() => PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+    }
+
+    public static class Prompt
+    {
+        public static string ShowDialog(string text, string caption, string defaultValue)
+        {
+            Form prompt = new Form()
+            {
+                Width = 280,
+                Height = 150,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                Text = caption,
+                StartPosition = FormStartPosition.CenterScreen
+            };
+            Label textLabel = new Label() { Left = 20, Top = 15, Text = text, Width = 220 };
+            TextBox textBox = new TextBox() { Left = 20, Top = 40, Width = 220, Text = defaultValue };
+            Button confirmation = new Button() { Text = "OK", Left = 160, Width = 80, Top = 70, DialogResult = DialogResult.OK };
+            prompt.Controls.Add(textBox);
+            prompt.Controls.Add(confirmation);
+            prompt.Controls.Add(textLabel);
+            prompt.AcceptButton = confirmation;
+            return prompt.ShowDialog() == DialogResult.OK ? textBox.Text : defaultValue;
+        }
     }
 
     internal class Program

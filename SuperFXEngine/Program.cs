@@ -587,7 +587,7 @@ namespace SuperFXEngine
 
                 DrawLine((int)pOrig.X, (int)pOrig.Y, (int)pX.X, (int)pX.Y, colX);
                 DrawLine((int)pOrig.X, (int)pOrig.Y, (int)pY.X, (int)pY.Y, colY);
-                DrawLine((int)pOrig.X, (int)pOrig.Y, (int)pZ.X, (int)pZ.Z, colZ);
+                DrawLine((int)pOrig.X, (int)pOrig.Y, (int)pZ.X, (int)pZ.Y, colZ);
 
                 DrawFilledCircle((int)pX.X, (int)pX.Y, 5, colX);
                 DrawFilledCircle((int)pY.X, (int)pY.Y, 5, colY);
@@ -930,7 +930,7 @@ namespace SuperFXEngine
 
         public SuperFXForm()
         {
-            Text = "Super FX Studio 3D [v1.46 - Cutscene Frame Range (Up to 10,000F)]";
+            Text = "Super FX Studio 3D [v1.47 - Gizmo Fix]";
             ClientSize = new Size(1100, 855);
             DoubleBuffered = true;
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -973,7 +973,6 @@ namespace SuperFXEngine
                     if (btnAnimPrev.Contains(e.Location)) currentFrame = Math.Max(0, currentFrame - 1);
                     if (btnAnimNext.Contains(e.Location)) currentFrame = Math.Min(currentClip.TotalFrames, currentFrame + 1);
 
-                    // Frame count modifiers (Expanded limit up to 10,000 frames)
                     if (btnSubFrameCount.Contains(e.Location))
                     {
                         currentClip.TotalFrames = Math.Max(5, currentClip.TotalFrames - 50);
@@ -1007,7 +1006,6 @@ namespace SuperFXEngine
                     if (btnSaveAnim.Contains(e.Location)) SaveAnimationToFile();
                     if (btnLoadAnim.Contains(e.Location)) LoadAnimationFromFile();
 
-                    // Scrub timeline track
                     if (timelineTrackRect.Contains(e.Location))
                     {
                         float relX = e.X - timelineTrackRect.Left;
@@ -1309,7 +1307,7 @@ namespace SuperFXEngine
             {
                 pX = WorldToScreen(origin + yDir * 1.3f);
                 pY = WorldToScreen(origin + xDir * 1.3f);
-                pZ = WorldToScreen(origin + xDir * 1.3f);
+                pZ = WorldToScreen(origin + zDir * 1.3f);
             }
             else
             {
@@ -1680,7 +1678,7 @@ namespace SuperFXEngine
                 // 8. Console Log
                 DrawGroupBox(g, new Rectangle(14, 554, 287, 252), "CONSOLE LOG");
                 g.FillRectangle(Brushes.Black, 20, 570, 275, 226);
-                g.DrawString("SUPFX_OS v1.46 [Cutscene Frame Range Active]\n> Max frames set to 10,000\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
+                g.DrawString("SUPFX_OS v1.47 [Gizmo Fix Applied]\n> Z-axis line drawing & hit-testing corrected\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
 
                 Rectangle statusRect = new Rectangle(0, ClientSize.Height - 22, ClientSize.Width, 22);
                 g.FillRectangle(bgBrush, statusRect);

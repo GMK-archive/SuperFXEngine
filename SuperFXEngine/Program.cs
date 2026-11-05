@@ -11,6 +11,90 @@ using System.Windows.Forms;
 
 namespace SuperFXEngine
 {
+    // ==========================================
+    // POLONIUM SCRIPT (.pscript) RUNTIME ENGINE
+    // ==========================================
+    public class PoloniumScriptEngine
+    {
+        public string ScriptName { get; set; } = "PlayerController.pscript";
+        public string SourceCode { get; set; } =
+            "// Polonium Scripting Language (.pscript)\n" +
+            "fn OnInit(Mesh self) {\n" +
+            "    AttachController(self, \"PlayerMovement\");\n" +
+            "}\n\n" +
+            "fn OnUpdate(Mesh self) {\n" +
+            "    auto moveSpeed = 7.0;\n" +
+            "    if (OnButtonPress(\"W\")) {\n" +
+            "        self.Position.Z = self.Position.Z + 0.1;\n" +
+            "    }\n" +
+            "    if (OnMousePress(\"Left\")) {\n" +
+            "        self.Rotation.Y = self.Rotation.Y + 0.05;\n" +
+            "    }\n" +
+            "}";
+
+        private Dictionary<string, float> variables = new Dictionary<string, float>();
+        private bool isControllerAttached = false;
+
+        public void Execute(Mesh targetMesh, HashSet<Keys> activeKeys, bool mouseClicked)
+        {
+            if (string.IsNullOrWhiteSpace(SourceCode)) return;
+
+            try
+            {
+                string[] lines = SourceCode.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                foreach (var rawLine in lines)
+                {
+                    string line = rawLine.Trim();
+                    if (line.StartsWith("//") || string.IsNullOrEmpty(line)) continue;
+
+                    if (line.Contains("AttachController"))
+                    {
+                        isControllerAttached = true;
+                    }
+
+                    if (line.StartsWith("auto "))
+                    {
+                        string decl = line.Substring(5).Replace(";", "").Trim();
+                        string[] parts = decl.Split('=');
+                        if (parts.Length == 2)
+                        {
+                            variables[parts[0].Trim()] = float.TryParse(parts[1].Trim(), out float val) ? val : 0.0f;
+                        }
+                    }
+
+                    if (line.Contains("OnButtonPress"))
+                    {
+                        if (line.Contains("\"W\"") && activeKeys.Contains(Keys.W)) targetMesh.Position.Z += 0.1f;
+                        if (line.Contains("\"S\"") && activeKeys.Contains(Keys.S)) targetMesh.Position.Z -= 0.1f;
+                        if (line.Contains("\"A\"") && activeKeys.Contains(Keys.A)) targetMesh.Position.X -= 0.1f;
+                        if (line.Contains("\"D\"") && activeKeys.Contains(Keys.D)) targetMesh.Position.X += 0.1f;
+                        if (line.Contains("\"Space\"") && activeKeys.Contains(Keys.Space)) targetMesh.Position.Y += 0.15f;
+                    }
+
+                    if (line.Contains("OnMousePress") && mouseClicked)
+                    {
+                        if (line.Contains("\"Left\""))
+                        {
+                            targetMesh.Rotation.Y += 0.05f;
+                        }
+                    }
+                }
+
+                if (isControllerAttached)
+                {
+                    if (activeKeys.Contains(Keys.W)) targetMesh.Position.Z += 0.05f;
+                    if (activeKeys.Contains(Keys.S)) targetMesh.Position.Z -= 0.05f;
+                    if (activeKeys.Contains(Keys.A)) targetMesh.Position.X -= 0.05f;
+                    if (activeKeys.Contains(Keys.D)) targetMesh.Position.X += 0.05f;
+                }
+            }
+            catch
+            {
+                // Suppress evaluation exceptions during runtime
+            }
+        }
+    }
+
     public struct Vector3
     {
         public float X, Y, Z;
@@ -44,8 +128,18 @@ namespace SuperFXEngine
 
     public struct Matrix4x4
     {
-        public float[,] M;
-        public Matrix4x4() { M = new float[4, 4]; }
+        private float[,] m_array;
+        public float[,] M
+        {
+            get
+            {
+                if (m_array == null) m_array = new float[4, 4];
+                return m_array;
+            }
+            set { m_array = value; }
+        }
+
+        public Matrix4x4() { m_array = new float[4, 4]; }
 
         public static Matrix4x4 Identity()
         {
@@ -169,6 +263,149 @@ namespace SuperFXEngine
         public Matrix4x4 GetViewMatrix() => Matrix4x4.LookAt(Position, Position + Forward, new Vector3(0, 1, 0));
     }
 
+    public enum CameraMode
+    {
+        Free,
+        Static,
+        StaticFollow,
+        Railed,
+        RailFollow,
+        FirstPerson,
+        ThirdPerson
+    }
+
+    public class CameraObject : Mesh
+    {
+        public CameraMode Mode = CameraMode.Free;
+        public Mesh FollowTarget = null;
+        public List<Vector3> RailPoints = new List<Vector3>();
+        public float RailProgress = 0.0f;
+        public Vector3 StaticTarget = new Vector3(0, 0, 0);
+
+        public CameraObject()
+        {
+            Name = "Camera_Obj";
+            RailPoints.Add(new Vector3(-5, 3, -10));
+            RailPoints.Add(new Vector3(0, 5, 0));
+            RailPoints.Add(new Vector3(5, 3, 10));
+        }
+
+        public Camera ComputeViewCamera(Mesh player)
+        {
+            Camera cam = new Camera();
+            switch (Mode)
+            {
+                case CameraMode.Free:
+                    cam.Position = Position;
+                    cam.Yaw = Rotation.Y;
+                    cam.Pitch = Rotation.X;
+                    break;
+
+                case CameraMode.Static:
+                    cam.Position = Position;
+                    cam.Yaw = Rotation.Y;
+                    cam.Pitch = Rotation.X;
+                    break;
+
+                case CameraMode.StaticFollow:
+                    cam.Position = Position;
+                    if (player != null)
+                    {
+                        Vector3 dir = (player.Position - Position).Normalized();
+                        cam.Yaw = (float)Math.Atan2(dir.X, dir.Z);
+                        cam.Pitch = (float)Math.Asin(dir.Y);
+                    }
+                    break;
+
+                case CameraMode.Railed:
+                    if (RailPoints.Count >= 2)
+                    {
+                        RailProgress = (RailProgress + 0.005f) % 1.0f;
+                        cam.Position = EvaluateRail(RailProgress);
+                        cam.Yaw = Rotation.Y;
+                    }
+                    break;
+
+                case CameraMode.RailFollow:
+                    if (RailPoints.Count >= 2)
+                    {
+                        RailProgress = (RailProgress + 0.005f) % 1.0f;
+                        cam.Position = EvaluateRail(RailProgress);
+                        if (player != null)
+                        {
+                            Vector3 dir = (player.Position - cam.Position).Normalized();
+                            cam.Yaw = (float)Math.Atan2(dir.X, dir.Z);
+                            cam.Pitch = (float)Math.Asin(dir.Y);
+                        }
+                    }
+                    break;
+
+                case CameraMode.FirstPerson:
+                    if (player != null)
+                    {
+                        cam.Position = player.Position + new Vector3(0, 0.5f, 0);
+                        cam.Yaw = player.Rotation.Y;
+                        cam.Pitch = player.Rotation.X;
+                    }
+                    break;
+
+                case CameraMode.ThirdPerson:
+                    if (player != null)
+                    {
+                        Matrix4x4 matRotY = Matrix4x4.RotationY(player.Rotation.Y);
+                        Vector3 offset = Matrix4x4.MultiplyVector(matRotY, new Vector3(0, 2.0f, -6.0f));
+                        cam.Position = player.Position + offset;
+                        Vector3 dir = (player.Position - cam.Position).Normalized();
+                        cam.Yaw = (float)Math.Atan2(dir.X, dir.Z);
+                        cam.Pitch = 0.2f;
+                    }
+                    break;
+            }
+            return cam;
+        }
+
+        private Vector3 EvaluateRail(float t)
+        {
+            if (RailPoints == null || RailPoints.Count == 0) return Position;
+            if (RailPoints.Count == 1) return RailPoints[0];
+
+            float scaled = t * (RailPoints.Count - 1);
+            int idx = (int)scaled;
+            if (idx >= RailPoints.Count - 1) return RailPoints[RailPoints.Count - 1];
+            float frac = scaled - idx;
+
+            Vector3 p1 = RailPoints[idx];
+            Vector3 p2 = RailPoints[idx + 1];
+            return new Vector3(
+                p1.X + (p2.X - p1.X) * frac,
+                p1.Y + (p2.Y - p1.Y) * frac,
+                p1.Z + (p2.Z - p1.Z) * frac
+            );
+        }
+
+        public new static CameraObject CreateCameraGizmoMesh()
+        {
+            CameraObject co = new CameraObject { Name = "Camera_Entity" };
+            co.CollisionMin = new Vector3(-0.5f, -0.5f, -0.5f);
+            co.CollisionMax = new Vector3(0.5f, 0.5f, 0.5f);
+
+            Color col = Color.Yellow;
+            Vector3[] v = {
+                new Vector3(-0.4f, -0.4f, -0.6f), new Vector3(-0.4f,  0.4f, -0.6f), new Vector3( 0.4f,  0.4f, -0.6f), new Vector3( 0.4f, -0.4f, -0.6f),
+                new Vector3(0, 0, 0.6f)
+            };
+            Vector2 uv = new Vector2(0, 0);
+
+            co.Triangles.Add(new Triangle(v[0], v[1], v[4], col, uv, uv, uv));
+            co.Triangles.Add(new Triangle(v[1], v[2], v[4], col, uv, uv, uv));
+            co.Triangles.Add(new Triangle(v[2], v[3], v[4], col, uv, uv, uv));
+            co.Triangles.Add(new Triangle(v[3], v[0], v[4], col, uv, uv, uv));
+            co.Triangles.Add(new Triangle(v[0], v[3], v[2], col, uv, uv, uv));
+            co.Triangles.Add(new Triangle(v[0], v[2], v[1], col, uv, uv, uv));
+            return co;
+        }
+    }
+
     public class Keyframe
     {
         public int FrameIndex;
@@ -231,7 +468,7 @@ namespace SuperFXEngine
 
         public void Evaluate(int currentFrame, out Vector3 pos, out Vector3 rot, out Vector3 scale)
         {
-            if (Keyframes.Count == 0)
+            if (Keyframes == null || Keyframes.Count == 0)
             {
                 pos = new Vector3(0, 0, 0); rot = new Vector3(0, 0, 0); scale = new Vector3(1, 1, 1);
                 return;
@@ -311,6 +548,9 @@ namespace SuperFXEngine
         public Vector3 CollisionMax = new Vector3(0.5f, 0.5f, 0.5f);
         public bool ShowCollisionBox = false;
 
+        public PoloniumScriptEngine AttachedScript = null;
+        public bool ScriptEnabled = false;
+
         public Matrix4x4 GetLocalMatrix()
         {
             Matrix4x4 matScale = Matrix4x4.Scale(Scale);
@@ -326,7 +566,7 @@ namespace SuperFXEngine
         public Matrix4x4 GetWorldMatrix()
         {
             Matrix4x4 localMatrix = GetLocalMatrix();
-            if (Parent != null)
+            if (Parent != null && Parent != this)
             {
                 return Matrix4x4.Multiply(localMatrix, Parent.GetWorldMatrix());
             }
@@ -444,6 +684,7 @@ namespace SuperFXEngine
 
     public enum GizmoAxis { None, X, Y, Z }
     public enum GizmoSpace { Global, Local }
+    public enum ViewTab { Layout, Animation, CodeEditor }
 
     public class SoftwareRenderer
     {
@@ -475,11 +716,15 @@ namespace SuperFXEngine
 
         public void RenderMesh(Mesh mesh, Camera camera, Color? overrideColor = null, float shadeMultiplier = 1.0f)
         {
+            if (mesh == null || camera == null || mesh.Triangles == null) return;
+
             Matrix4x4 matWorld = mesh.GetWorldMatrix();
             Matrix4x4 matView = camera.GetViewMatrix();
 
             foreach (var tri in mesh.Triangles)
             {
+                if (tri == null || tri.P == null || tri.P.Length < 3) continue;
+
                 Vector3[] worldP = new Vector3[3];
                 Vector3[] viewP = new Vector3[3];
 
@@ -522,12 +767,12 @@ namespace SuperFXEngine
                 }
             }
 
-            if (overrideColor == null && mesh.ShowCollisionBox && mesh != null) RenderCollisionBox(mesh, camera);
+            if (overrideColor == null && mesh.ShowCollisionBox) RenderCollisionBox(mesh, camera);
         }
 
         public void RenderGizmo(Mesh selectedMesh, Camera camera, EditorTool currentTool, GizmoAxis activeAxis, GizmoAxis hoveredGizmoAxis, GizmoSpace space)
         {
-            if (selectedMesh == null) return;
+            if (selectedMesh == null || camera == null) return;
             Matrix4x4 matView = camera.GetViewMatrix();
             Matrix4x4 matWorld = selectedMesh.GetWorldMatrix();
 
@@ -603,26 +848,22 @@ namespace SuperFXEngine
                     float a1 = (float)(i * 2 * Math.PI / segments);
                     float a2 = (float)((i + 1) * 2 * Math.PI / segments);
 
-                    // X Ring: Rotates around X axis (Y-Z plane)
                     Vector3 rx1 = origin + yDir * (float)Math.Cos(a1) * radius + zDir * (float)Math.Sin(a1) * radius;
                     Vector3 rx2 = origin + yDir * (float)Math.Cos(a2) * radius + zDir * (float)Math.Sin(a2) * radius;
                     Vector3 prx1 = ProjectPoint(rx1), prx2 = ProjectPoint(rx2);
                     if (prx1.X >= 0 && prx2.X >= 0) DrawLine((int)prx1.X, (int)prx1.Y, (int)prx2.X, (int)prx2.Y, colX);
 
-                    // Y Ring: Rotates around Y axis (X-Z plane)
                     Vector3 ry1 = origin + xDir * (float)Math.Cos(a1) * radius + zDir * (float)Math.Sin(a1) * radius;
                     Vector3 ry2 = origin + xDir * (float)Math.Cos(a2) * radius + zDir * (float)Math.Sin(a2) * radius;
                     Vector3 pry1 = ProjectPoint(ry1), pry2 = ProjectPoint(ry2);
                     if (pry1.X >= 0 && pry2.X >= 0) DrawLine((int)pry1.X, (int)pry1.Y, (int)pry2.X, (int)pry2.Y, colY);
 
-                    // Z Ring: Rotates around Z axis (X-Y plane)
                     Vector3 rz1 = origin + xDir * (float)Math.Cos(a1) * radius + yDir * (float)Math.Sin(a1) * radius;
                     Vector3 rz2 = origin + xDir * (float)Math.Cos(a2) * radius + yDir * (float)Math.Sin(a2) * radius;
                     Vector3 prz1 = ProjectPoint(rz1), prz2 = ProjectPoint(rz2);
                     if (prz1.X >= 0 && prz2.X >= 0) DrawLine((int)prz1.X, (int)prz1.Y, (int)prz2.X, (int)prz2.Y, colZ);
                 }
 
-                // Handle indicator balls placed directly on their respective rotation rings
                 Vector3 pTipX = ProjectPoint(origin + yDir * radius);
                 Vector3 pTipY = ProjectPoint(origin + zDir * radius);
                 Vector3 pTipZ = ProjectPoint(origin + xDir * radius);
@@ -649,6 +890,7 @@ namespace SuperFXEngine
 
         private void RenderCollisionBox(Mesh mesh, Camera camera)
         {
+            if (mesh == null || camera == null) return;
             Matrix4x4 matWorld = mesh.GetWorldMatrix();
             Matrix4x4 matView = camera.GetViewMatrix();
             Vector3 min = mesh.CollisionMin, max = mesh.CollisionMax;
@@ -683,6 +925,7 @@ namespace SuperFXEngine
 
         private void FillPerspectiveCorrectTexturedTriangle(Triangle tri)
         {
+            if (tri == null || tri.P == null || tri.P.Length < 3) return;
             Vector3 p0 = tri.P[0], p1 = tri.P[1], p2 = tri.P[2];
             int minX = (int)Math.Max(0, Math.Min(p0.X, Math.Min(p1.X, p2.X)));
             int maxX = (int)Math.Min(Width - 1, Math.Max(p0.X, Math.Max(p1.X, p2.X)));
@@ -695,9 +938,9 @@ namespace SuperFXEngine
             int flatColor = Color.FromArgb(255, baseR, baseG, baseB).ToArgb();
             Bitmap tex = tri.TextureImage;
 
-            float iz0 = 1.0f / p0.Z;
-            float iz1 = 1.0f / p1.Z;
-            float iz2 = 1.0f / p2.Z;
+            float iz0 = p0.Z != 0 ? 1.0f / p0.Z : 1.0f;
+            float iz1 = p1.Z != 0 ? 1.0f / p1.Z : 1.0f;
+            float iz2 = p2.Z != 0 ? 1.0f / p2.Z : 1.0f;
 
             float u0z = tri.UV[0].X * iz0, v0z = tri.UV[0].Y * iz0;
             float u1z = tri.UV[1].X * iz1, v1z = tri.UV[1].Y * iz1;
@@ -747,6 +990,7 @@ namespace SuperFXEngine
 
         public (Mesh mesh, Triangle face) PickFace3D(int screenX, int screenY, List<Mesh> meshes, Camera camera)
         {
+            if (meshes == null || camera == null) return (null, null);
             float ndcX = (2.0f * screenX) / Width - 1.0f;
             float ndcY = 1.0f - (2.0f * screenY) / Height;
             float fovRad = (float)(60.0f * Math.PI / 180.0f);
@@ -763,9 +1007,11 @@ namespace SuperFXEngine
 
             foreach (var mesh in meshes)
             {
+                if (mesh == null || mesh.Triangles == null) continue;
                 Matrix4x4 matWorld = mesh.GetWorldMatrix();
                 foreach (var tri in mesh.Triangles)
                 {
+                    if (tri == null || tri.P == null || tri.P.Length < 3) continue;
                     Vector3 v0 = Matrix4x4.MultiplyVector(matWorld, tri.P[0]);
                     Vector3 v1 = Matrix4x4.MultiplyVector(matWorld, tri.P[1]);
                     Vector3 v2 = Matrix4x4.MultiplyVector(matWorld, tri.P[2]);
@@ -825,6 +1071,7 @@ namespace SuperFXEngine
 
         private void DrawWireTriangle(Triangle tri, int argb)
         {
+            if (tri == null || tri.P == null || tri.P.Length < 3) return;
             DrawLine((int)tri.P[0].X, (int)tri.P[0].Y, (int)tri.P[1].X, (int)tri.P[1].Y, argb);
             DrawLine((int)tri.P[1].X, (int)tri.P[1].Y, (int)tri.P[2].X, (int)tri.P[2].Y, argb);
             DrawLine((int)tri.P[2].X, (int)tri.P[2].Y, (int)tri.P[0].X, (int)tri.P[0].Y, argb);
@@ -842,6 +1089,154 @@ namespace SuperFXEngine
     public enum EditorTool { Move, Rotate, Scale, FacePaint, Collision, Delete }
     public enum GameMode { Editor, FlightGame, PlatformerGame }
 
+    // ==========================================
+    // DEDICATED PLAYTEST WINDOW WITH CAMERA MODES
+    // ==========================================
+    public class PlaytestWindow : Form
+    {
+        private SoftwareRenderer renderer;
+        private List<Mesh> playObjects;
+        private CameraObject activeCameraObj;
+        private Camera playCamera;
+        private Mesh playerMesh;
+        private HashSet<Keys> keys = new HashSet<Keys>();
+        private Stopwatch stopwatch = Stopwatch.StartNew();
+        private long lastTick = 0;
+        private GameMode mode;
+        private bool isFullscreen = false;
+        private FormWindowState previousWindowState;
+        private FormBorderStyle previousBorderStyle;
+
+        public PlaytestWindow(List<Mesh> sourceObjects, Camera sourceCamera, GameMode gameMode)
+        {
+            Text = $"Super FX Studio - Playtest Window [{gameMode}] (Press F11 for Fullscreen | C to Cycle Camera Mode)";
+            ClientSize = new Size(800, 600);
+            DoubleBuffered = true;
+            FormBorderStyle = FormBorderStyle.Sizable;
+            MaximizeBox = true;
+            MinimizeBox = true;
+
+            renderer = new SoftwareRenderer(320, 240);
+            mode = gameMode;
+
+            playObjects = sourceObjects?.Select(o => {
+                Mesh clone = o is CameraObject co ? new CameraObject
+                {
+                    Mode = co.Mode,
+                    RailPoints = co.RailPoints != null ? new List<Vector3>(co.RailPoints) : new List<Vector3>()
+                } : new Mesh();
+
+                clone.Name = o.Name;
+                clone.Position = o.Position;
+                clone.Rotation = o.Rotation;
+                clone.Scale = o.Scale;
+                clone.CollisionMin = o.CollisionMin;
+                clone.CollisionMax = o.CollisionMax;
+                clone.ScriptEnabled = o.ScriptEnabled;
+                clone.AttachedScript = o.AttachedScript;
+                clone.Triangles = o.Triangles != null ? o.Triangles.Select(t => t.Clone()).ToList() : new List<Triangle>();
+                return clone;
+            }).ToList() ?? new List<Mesh>();
+
+            playerMesh = playObjects.FirstOrDefault(o => o.Name == "Arwing_Fighter") ?? playObjects.LastOrDefault();
+            activeCameraObj = playObjects.OfType<CameraObject>().FirstOrDefault() ?? new CameraObject();
+
+            KeyDown += (s, e) =>
+            {
+                keys.Add(e.KeyCode);
+                if (e.KeyCode == Keys.F11) ToggleFullscreen();
+                if (e.KeyCode == Keys.C)
+                {
+                    activeCameraObj.Mode = (CameraMode)(((int)activeCameraObj.Mode + 1) % 7);
+                }
+            };
+            KeyUp += (s, e) => keys.Remove(e.KeyCode);
+
+            Application.Idle += (s, e) =>
+            {
+                while (!NativeMessageWaiting())
+                {
+                    UpdatePlaytest();
+                    Invalidate();
+                }
+            };
+        }
+
+        private void ToggleFullscreen()
+        {
+            if (!isFullscreen)
+            {
+                previousWindowState = WindowState;
+                previousBorderStyle = FormBorderStyle;
+                FormBorderStyle = FormBorderStyle.None;
+                WindowState = FormWindowState.Maximized;
+                isFullscreen = true;
+            }
+            else
+            {
+                FormBorderStyle = previousBorderStyle;
+                WindowState = previousWindowState;
+                isFullscreen = false;
+            }
+        }
+
+        private void UpdatePlaytest()
+        {
+            long now = stopwatch.ElapsedMilliseconds;
+            float dt = (now - lastTick) / 1000.0f;
+            if (dt > 0.1f) dt = 0.1f;
+            lastTick = now;
+
+            foreach (var obj in playObjects)
+            {
+                if (obj != null && obj.ScriptEnabled && obj.AttachedScript != null)
+                {
+                    obj.AttachedScript.Execute(obj, keys, false);
+                }
+            }
+
+            if (playerMesh != null)
+            {
+                float speed = 8.0f * dt;
+                if (keys.Contains(Keys.W)) playerMesh.Position.Z += speed;
+                if (keys.Contains(Keys.S)) playerMesh.Position.Z -= speed;
+                if (keys.Contains(Keys.A)) playerMesh.Position.X -= speed;
+                if (keys.Contains(Keys.D)) playerMesh.Position.X += speed;
+                if (keys.Contains(Keys.Q)) playerMesh.Position.Y += speed;
+                if (keys.Contains(Keys.E)) playerMesh.Position.Y -= speed;
+            }
+
+            playCamera = activeCameraObj?.ComputeViewCamera(playerMesh) ?? new Camera();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            renderer.Clear(Color.FromArgb(255, 15, 15, 40));
+            foreach (var obj in playObjects)
+            {
+                if (obj != null && obj != activeCameraObj) renderer.RenderMesh(obj, playCamera);
+            }
+
+            Bitmap frame = renderer.GetFrameBitmap();
+            e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+            e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+            e.Graphics.DrawImage(frame, 0, 0, ClientSize.Width, ClientSize.Height);
+
+            using (Font f = new Font("Consolas", 9f, FontStyle.Bold))
+            using (Brush b = new SolidBrush(Color.Lime))
+            {
+                string camModeStr = activeCameraObj != null ? activeCameraObj.Mode.ToString() : "Free";
+                e.Graphics.DrawString($"PLAYTEST | CamMode: {camModeStr} | [C] Cycle Cam | [F11] Fullscreen | WASD to Move", f, b, 10, 10);
+            }
+        }
+
+        [DllImport("user32.dll")]
+        private static extern bool PeekMessage(out NativeMessage lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeMessage { public IntPtr hWnd; public uint msg; public IntPtr wParam; public IntPtr lParam; public uint time; public Point pt; }
+        private bool NativeMessageWaiting() => PeekMessage(out _, IntPtr.Zero, 0, 0, 0);
+    }
+
     public class SuperFXForm : Form
     {
         private const int INTERNAL_WIDTH = 320;
@@ -849,7 +1244,7 @@ namespace SuperFXEngine
 
         private SoftwareRenderer renderer;
         private List<Mesh> worldObjects = new List<Mesh>();
-        private Camera camera = new Camera();
+        private Camera editorCamera = new Camera();
 
         private HashSet<Keys> activeKeys = new HashSet<Keys>();
         private Stopwatch timer = Stopwatch.StartNew();
@@ -858,6 +1253,7 @@ namespace SuperFXEngine
         public EditorTool CurrentTool = EditorTool.Move;
         public GizmoSpace CurrentGizmoSpace = GizmoSpace.Global;
         public GameMode CurrentGameMode = GameMode.Editor;
+        public ViewTab CurrentViewTab = ViewTab.Layout;
         public Color CurrentPaintColor = Color.Red;
         public Bitmap LoadedImageTexture = null;
 
@@ -872,20 +1268,23 @@ namespace SuperFXEngine
         private Point lastMousePos;
         private bool isRightMouseDown = false;
         private bool isGizmoDragging = false;
+        private bool isLeftMouseClickedThisFrame = false;
         private GizmoAxis activeGizmoAxis = GizmoAxis.None;
         private GizmoAxis hoveredGizmoAxis = GizmoAxis.None;
 
         private Mesh playerShip = null;
         private float gameScore = 0;
-        private float playerVelocityY = 0;
-        private bool isGrounded = false;
 
         private readonly Color[] PaletteColors = new Color[] {
             Color.Red, Color.Orange, Color.Yellow, Color.Lime,
             Color.Cyan, Color.DodgerBlue, Color.Magenta, Color.White, Color.DarkGray
         };
 
-        // UI Layout Rectangles
+        private Rectangle btnTablayout = new Rectangle(330, 2, 80, 21);
+        private Rectangle btnTabAnim = new Rectangle(413, 2, 80, 21);
+        private Rectangle btnTabCode = new Rectangle(496, 2, 95, 21);
+        private Rectangle btnPlaytestPopup = new Rectangle(594, 2, 115, 21);
+
         private Rectangle btnMove = new Rectangle(20, 42, 85, 22);
         private Rectangle btnRotate = new Rectangle(110, 42, 85, 22);
         private Rectangle btnScale = new Rectangle(200, 42, 95, 22);
@@ -910,15 +1309,20 @@ namespace SuperFXEngine
         private Rectangle btnLoadTex = new Rectangle(20, 356, 132, 22);
         private Rectangle btnClearTex = new Rectangle(163, 356, 132, 22);
 
-        private Rectangle btnSpawnCube = new Rectangle(20, 400, 85, 22);
-        private Rectangle btnSpawnPyr = new Rectangle(110, 400, 85, 22);
-        private Rectangle btnSpawnFighter = new Rectangle(200, 400, 95, 22);
+        private Rectangle scriptAttachBox = new Rectangle(20, 386, 275, 68);
+        private Rectangle btnToggleScript = new Rectangle(28, 402, 125, 22);
+        private Rectangle btnOpenCodeView = new Rectangle(161, 402, 125, 22);
 
-        private Rectangle btnPlayEditor = new Rectangle(20, 444, 85, 22);
-        private Rectangle btnPlayFlight = new Rectangle(110, 444, 85, 22);
-        private Rectangle btnPlayPlatform = new Rectangle(200, 444, 95, 22);
+        private Rectangle btnSpawnCube = new Rectangle(20, 464, 85, 22);
+        private Rectangle btnSpawnPyr = new Rectangle(110, 464, 85, 22);
+        private Rectangle btnSpawnFighter = new Rectangle(200, 464, 95, 22);
+        private Rectangle btnSpawnCamera = new Rectangle(20, 490, 275, 22);
 
-        // Separate Animation Window Rectangles
+        private Rectangle btnPlayEditor = new Rectangle(20, 528, 85, 22);
+        private Rectangle btnPlayFlight = new Rectangle(110, 528, 85, 22);
+        private Rectangle btnPlayPlatform = new Rectangle(200, 528, 95, 22);
+
+        private TextBox codeEditorTextBox = new TextBox();
         private Rectangle animWindowRect = new Rectangle(330, 725, 740, 120);
         private Rectangle btnAnimPlay = new Rectangle(342, 750, 65, 24);
         private Rectangle btnAnimPrev = new Rectangle(412, 750, 32, 24);
@@ -934,7 +1338,7 @@ namespace SuperFXEngine
 
         public SuperFXForm()
         {
-            Text = "Super FX Studio 3D [v1.51 - Rotation Ring Balls Fix]";
+            Text = "Super FX Studio 3D [v1.57.1 - Null-Safe Renderer Fix]";
             ClientSize = new Size(1100, 855);
             DoubleBuffered = true;
             FormBorderStyle = FormBorderStyle.FixedSingle;
@@ -942,6 +1346,23 @@ namespace SuperFXEngine
 
             renderer = new SoftwareRenderer(INTERNAL_WIDTH, INTERNAL_HEIGHT);
             SetupDefaultScene();
+
+            codeEditorTextBox.Location = new Point(340, 35);
+            codeEditorTextBox.Size = new Size(720, 670);
+            codeEditorTextBox.Multiline = true;
+            codeEditorTextBox.ScrollBars = ScrollBars.Vertical;
+            codeEditorTextBox.Font = new Font("Consolas", 10.0f);
+            codeEditorTextBox.BackColor = Color.FromArgb(30, 30, 40);
+            codeEditorTextBox.ForeColor = Color.FromArgb(220, 220, 240);
+            codeEditorTextBox.Visible = false;
+            codeEditorTextBox.TextChanged += (s, e) =>
+            {
+                if (selectedMesh != null && selectedMesh.AttachedScript != null)
+                {
+                    selectedMesh.AttachedScript.SourceCode = codeEditorTextBox.Text;
+                }
+            };
+            Controls.Add(codeEditorTextBox);
 
             KeyDown += (s, e) =>
             {
@@ -970,8 +1391,27 @@ namespace SuperFXEngine
 
             MouseDown += (s, e) =>
             {
-                // Animation Timeline Window clicks
-                if (animWindowRect.Contains(e.Location))
+                if (btnTablayout.Contains(e.Location)) { CurrentViewTab = ViewTab.Layout; codeEditorTextBox.Visible = false; }
+                if (btnTabAnim.Contains(e.Location)) { CurrentViewTab = ViewTab.Animation; codeEditorTextBox.Visible = false; }
+                if (btnTabCode.Contains(e.Location))
+                {
+                    CurrentViewTab = ViewTab.CodeEditor;
+                    if (selectedMesh != null)
+                    {
+                        if (selectedMesh.AttachedScript == null) selectedMesh.AttachedScript = new PoloniumScriptEngine();
+                        codeEditorTextBox.Text = selectedMesh.AttachedScript.SourceCode;
+                    }
+                    else codeEditorTextBox.Text = "// Select a mesh in hierarchy to edit its Polonium Script (.pscript)";
+                    codeEditorTextBox.Visible = true;
+                    codeEditorTextBox.BringToFront();
+                }
+                if (btnPlaytestPopup.Contains(e.Location))
+                {
+                    PlaytestWindow playWindow = new PlaytestWindow(worldObjects, editorCamera, CurrentGameMode);
+                    playWindow.Show();
+                }
+
+                if (CurrentViewTab == ViewTab.Animation && animWindowRect.Contains(e.Location))
                 {
                     if (btnAnimPlay.Contains(e.Location)) isPlayingAnimation = !isPlayingAnimation;
                     if (btnAnimPrev.Contains(e.Location)) currentFrame = Math.Max(0, currentFrame - 1);
@@ -1010,8 +1450,7 @@ namespace SuperFXEngine
                     return;
                 }
 
-                // Sidebar Toolbox clicks
-                if (e.X >= 10 && e.X <= 315 && e.Y >= 25 && e.Y <= 500)
+                if (e.X >= 10 && e.X <= 315 && e.Y >= 25 && e.Y <= 560)
                 {
                     if (btnMove.Contains(e.Location)) CurrentTool = EditorTool.Move;
                     if (btnRotate.Contains(e.Location)) CurrentTool = EditorTool.Rotate;
@@ -1034,8 +1473,12 @@ namespace SuperFXEngine
                         {
                             if (selectedMesh != null) selectedMesh.IsSelected = false;
                             selectedMesh = treeItems[clickedIndex].mesh;
-                            selectedMesh.IsSelected = true;
+                            if (selectedMesh != null) selectedMesh.IsSelected = true;
                             selectedFace = null;
+                            if (CurrentViewTab == ViewTab.CodeEditor && selectedMesh != null && selectedMesh.AttachedScript != null)
+                            {
+                                codeEditorTextBox.Text = selectedMesh.AttachedScript.SourceCode;
+                            }
                         }
                     }
 
@@ -1074,9 +1517,31 @@ namespace SuperFXEngine
                     if (btnLoadTex.Contains(e.Location)) LoadImageTextureFromFile();
                     if (btnClearTex.Contains(e.Location)) LoadedImageTexture = null;
 
+                    if (btnToggleScript.Contains(e.Location))
+                    {
+                        if (selectedMesh != null)
+                        {
+                            if (selectedMesh.AttachedScript == null) selectedMesh.AttachedScript = new PoloniumScriptEngine();
+                            selectedMesh.ScriptEnabled = !selectedMesh.ScriptEnabled;
+                        }
+                        else MessageBox.Show("Select an object to attach/toggle Polonium Script.");
+                    }
+                    if (btnOpenCodeView.Contains(e.Location))
+                    {
+                        CurrentViewTab = ViewTab.CodeEditor;
+                        if (selectedMesh != null)
+                        {
+                            if (selectedMesh.AttachedScript == null) selectedMesh.AttachedScript = new PoloniumScriptEngine();
+                            codeEditorTextBox.Text = selectedMesh.AttachedScript.SourceCode;
+                        }
+                        codeEditorTextBox.Visible = true;
+                        codeEditorTextBox.BringToFront();
+                    }
+
                     if (btnSpawnCube.Contains(e.Location)) SpawnObject(Mesh.CreateCube(1.0f, CurrentPaintColor));
                     if (btnSpawnPyr.Contains(e.Location)) SpawnObject(Mesh.CreatePyramid(1.0f, CurrentPaintColor));
                     if (btnSpawnFighter.Contains(e.Location)) SpawnObject(Mesh.CreateStarFoxFighter());
+                    if (btnSpawnCamera.Contains(e.Location)) SpawnObject(CameraObject.CreateCameraGizmoMesh());
 
                     if (btnPlayEditor.Contains(e.Location)) SwitchGameMode(GameMode.Editor);
                     if (btnPlayFlight.Contains(e.Location)) SwitchGameMode(GameMode.FlightGame);
@@ -1084,7 +1549,6 @@ namespace SuperFXEngine
                     return;
                 }
 
-                // Palette clicks
                 if (e.Y >= ClientSize.Height - 130 && e.Y <= ClientSize.Height - 80 && e.X >= 330 && e.X <= 680)
                 {
                     int idx = (e.X - 330) / 38;
@@ -1096,8 +1560,7 @@ namespace SuperFXEngine
                     return;
                 }
 
-                // Viewport clicks
-                if (CurrentGameMode != GameMode.Editor) return;
+                if (CurrentViewTab == ViewTab.CodeEditor || CurrentGameMode != GameMode.Editor) return;
                 int vpX = 330, vpY = 25, vpW = 740, vpH = 690;
                 Rectangle vpRect = new Rectangle(vpX, vpY, vpW, vpH);
 
@@ -1110,7 +1573,8 @@ namespace SuperFXEngine
                     }
                     else if (e.Button == MouseButtons.Left)
                     {
-                        if (selectedMesh != null && selectedMesh != worldObjects[0] &&
+                        isLeftMouseClickedThisFrame = true;
+                        if (selectedMesh != null && worldObjects.Count > 0 && selectedMesh != worldObjects[0] &&
                            (CurrentTool == EditorTool.Move || CurrentTool == EditorTool.Rotate || CurrentTool == EditorTool.Scale))
                         {
                             activeGizmoAxis = GetClickedGizmoAxis(e.Location, selectedMesh, vpRect);
@@ -1125,7 +1589,7 @@ namespace SuperFXEngine
                         int rx = (int)((float)(e.X - vpX) / vpW * INTERNAL_WIDTH);
                         int ry = (int)((float)(e.Y - vpY) / vpH * INTERNAL_HEIGHT);
 
-                        var (hitMesh, hitFace) = renderer.PickFace3D(rx, ry, worldObjects, camera);
+                        var (hitMesh, hitFace) = renderer.PickFace3D(rx, ry, worldObjects, editorCamera);
 
                         if (selectedFace != null) selectedFace.IsSelected = false;
                         if (selectedMesh != null) selectedMesh.IsSelected = false;
@@ -1133,6 +1597,11 @@ namespace SuperFXEngine
                         if (hitMesh != null && hitFace != null)
                         {
                             selectedMesh = hitMesh; selectedFace = hitFace;
+                            if (CurrentViewTab == ViewTab.CodeEditor && selectedMesh.AttachedScript != null)
+                            {
+                                codeEditorTextBox.Text = selectedMesh.AttachedScript.SourceCode;
+                            }
+
                             if (CurrentTool == EditorTool.FacePaint)
                             {
                                 selectedFace.BaseColor = CurrentPaintColor;
@@ -1166,7 +1635,7 @@ namespace SuperFXEngine
                 int vpX = 330, vpY = 25, vpW = 740, vpH = 690;
                 Rectangle vpRect = new Rectangle(vpX, vpY, vpW, vpH);
 
-                if (CurrentGameMode == GameMode.Editor && selectedMesh != null && selectedMesh != worldObjects[0] && !isGizmoDragging && !isRightMouseDown)
+                if (CurrentGameMode == GameMode.Editor && selectedMesh != null && worldObjects.Count > 0 && selectedMesh != worldObjects[0] && !isGizmoDragging && !isRightMouseDown)
                 {
                     if (e.X >= vpX && e.X <= vpX + vpW && e.Y >= vpY && e.Y <= vpY + vpH)
                     {
@@ -1178,8 +1647,8 @@ namespace SuperFXEngine
                 if (isRightMouseDown)
                 {
                     float dx = e.X - lastMousePos.X, dy = e.Y - lastMousePos.Y;
-                    camera.Yaw += dx * 0.005f; camera.Pitch -= dy * 0.005f;
-                    camera.Pitch = Math.Max(-1.5f, Math.Min(1.5f, camera.Pitch));
+                    editorCamera.Yaw += dx * 0.005f; editorCamera.Pitch -= dy * 0.005f;
+                    editorCamera.Pitch = Math.Max(-1.5f, Math.Min(1.5f, editorCamera.Pitch));
                     lastMousePos = e.Location;
                 }
                 else if (isGizmoDragging && selectedMesh != null)
@@ -1254,17 +1723,17 @@ namespace SuperFXEngine
             List<(Mesh, int)> list = new List<(Mesh, int)>();
             void AddRecursive(Mesh m, int depth)
             {
-                if (worldObjects.Contains(m))
+                if (m != null && worldObjects.Contains(m))
                 {
                     list.Add((m, depth));
-                    foreach (var child in worldObjects.Where(o => o.Parent == m))
+                    foreach (var child in worldObjects.Where(o => o != null && o.Parent == m))
                     {
                         AddRecursive(child, depth + 1);
                     }
                 }
             }
 
-            foreach (var obj in worldObjects.Where(o => o.Parent == null))
+            foreach (var obj in worldObjects.Where(o => o != null && o.Parent == null))
             {
                 AddRecursive(obj, 0);
             }
@@ -1273,7 +1742,8 @@ namespace SuperFXEngine
 
         private GizmoAxis GetClickedGizmoAxis(Point mousePos, Mesh mesh, Rectangle vpRect)
         {
-            Matrix4x4 matView = camera.GetViewMatrix();
+            if (mesh == null) return GizmoAxis.None;
+            Matrix4x4 matView = editorCamera.GetViewMatrix();
             Matrix4x4 matWorld = mesh.GetWorldMatrix();
             Vector3 origin = new Vector3(matWorld.M[3, 0], matWorld.M[3, 1], matWorld.M[3, 2]);
             float handleLength = 1.8f;
@@ -1315,7 +1785,6 @@ namespace SuperFXEngine
             PointF pX, pY, pZ;
             if (CurrentTool == EditorTool.Rotate)
             {
-                // Align tip projections with exact ring points on the Y-Z, X-Z, and X-Y planes respectively
                 pX = WorldToScreen(origin + yDir * 1.3f);
                 pY = WorldToScreen(origin + zDir * 1.3f);
                 pZ = WorldToScreen(origin + xDir * 1.3f);
@@ -1385,17 +1854,37 @@ namespace SuperFXEngine
             worldObjects.Clear();
             Mesh ground = Mesh.CreateGroundGrid(60.0f, 25);
             ground.Position = new Vector3(0, 0, 0); worldObjects.Add(ground);
+
             Mesh fighter = Mesh.CreateStarFoxFighter();
-            fighter.Position = new Vector3(0, 1.5f, 5.0f); worldObjects.Add(fighter);
+            fighter.Position = new Vector3(0, 1.5f, 5.0f);
+            fighter.AttachedScript = new PoloniumScriptEngine();
+            worldObjects.Add(fighter);
+
+            CameraObject camObj = CameraObject.CreateCameraGizmoMesh();
+            camObj.Position = new Vector3(0, 4, -5);
+            worldObjects.Add(camObj);
+
+            editorCamera.Position = new Vector3(0, 3, -12);
+            editorCamera.Pitch = 0.2f;
+            editorCamera.Yaw = 0.0f;
         }
 
-        private void SpawnObject(Mesh m) { m.Position = camera.Position + camera.Forward * 6.0f; worldObjects.Add(m); selectedMesh = m; }
+        private void SpawnObject(Mesh m)
+        {
+            if (m == null) return;
+            m.Position = editorCamera.Position + editorCamera.Forward * 6.0f;
+            m.AttachedScript = new PoloniumScriptEngine();
+            worldObjects.Add(m);
+            selectedMesh = m;
+        }
+
         private void DeleteSelectedMesh()
         {
-            if (selectedMesh != null && selectedMesh != worldObjects[0])
+            if (selectedMesh != null && worldObjects.Count > 0 && selectedMesh != worldObjects[0])
             {
-                foreach (var child in worldObjects.Where(o => o.Parent == selectedMesh)) child.Parent = null;
+                foreach (var child in worldObjects.Where(o => o != null && o.Parent == selectedMesh)) child.Parent = null;
                 worldObjects.Remove(selectedMesh); selectedMesh = null; selectedFace = null;
+                codeEditorTextBox.Visible = false;
             }
         }
 
@@ -1404,8 +1893,8 @@ namespace SuperFXEngine
             CurrentGameMode = mode; gameScore = 0;
             if (mode == GameMode.FlightGame)
             {
-                SetupDefaultScene(); playerShip = worldObjects[1];
-                camera.Position = new Vector3(0, 3.5f, -2.0f); camera.Pitch = 0.1f; camera.Yaw = 0.0f;
+                SetupDefaultScene();
+                playerShip = worldObjects.Count > 1 ? worldObjects[1] : null;
                 for (int i = 1; i <= 8; i++)
                 {
                     Mesh cube = Mesh.CreateCube(1.5f, Color.Magenta);
@@ -1427,7 +1916,7 @@ namespace SuperFXEngine
             }
             else
             {
-                SetupDefaultScene(); camera.Position = new Vector3(0, 3, -12); camera.Pitch = 0.2f; camera.Yaw = 0.0f;
+                SetupDefaultScene();
             }
         }
 
@@ -1438,13 +1927,22 @@ namespace SuperFXEngine
             if (deltaTime > 0.1f) deltaTime = 0.1f;
             lastTime = currentTime;
 
+            foreach (var obj in worldObjects)
+            {
+                if (obj != null && obj.ScriptEnabled && obj.AttachedScript != null)
+                {
+                    obj.AttachedScript.Execute(obj, activeKeys, isLeftMouseClickedThisFrame);
+                }
+            }
+            isLeftMouseClickedThisFrame = false;
+
             if (isPlayingAnimation && CurrentGameMode == GameMode.Editor)
             {
                 currentFrame++;
                 if (currentFrame > currentClip.TotalFrames) currentFrame = 0;
             }
 
-            if (selectedMesh != null && currentClip.Keyframes.Count > 0 && CurrentGameMode == GameMode.Editor && !isGizmoDragging)
+            if (selectedMesh != null && currentClip.Keyframes != null && currentClip.Keyframes.Count > 0 && CurrentGameMode == GameMode.Editor && !isGizmoDragging)
             {
                 currentClip.Evaluate(currentFrame, out selectedMesh.Position, out selectedMesh.Rotation, out selectedMesh.Scale);
             }
@@ -1452,36 +1950,12 @@ namespace SuperFXEngine
             if (CurrentGameMode == GameMode.Editor)
             {
                 float speed = 8.0f * deltaTime;
-                if (activeKeys.Contains(Keys.W)) camera.Position += camera.Forward * speed;
-                if (activeKeys.Contains(Keys.S)) camera.Position -= camera.Forward * speed;
-                if (activeKeys.Contains(Keys.A)) camera.Position -= camera.Right * speed;
-                if (activeKeys.Contains(Keys.D)) camera.Position += camera.Right * speed;
-                if (activeKeys.Contains(Keys.Q)) camera.Position.Y += speed;
-                if (activeKeys.Contains(Keys.E)) camera.Position.Y -= speed;
-            }
-            else if (CurrentGameMode == GameMode.FlightGame)
-            {
-                float flightSpeed = 12.0f * deltaTime;
-                playerShip.Position.Z += flightSpeed; camera.Position.Z = playerShip.Position.Z - 6.0f;
-                if (activeKeys.Contains(Keys.A) || activeKeys.Contains(Keys.Left)) { playerShip.Position.X -= 8.0f * deltaTime; playerShip.Rotation.Z = 0.5f; }
-                else if (activeKeys.Contains(Keys.D) || activeKeys.Contains(Keys.Right)) { playerShip.Position.X += 8.0f * deltaTime; playerShip.Rotation.Z = -0.5f; }
-                else playerShip.Rotation.Z = 0.0f;
-                if (activeKeys.Contains(Keys.W) || activeKeys.Contains(Keys.Up)) playerShip.Position.Y += 6.0f * deltaTime;
-                if (activeKeys.Contains(Keys.S) || activeKeys.Contains(Keys.Down)) playerShip.Position.Y -= 6.0f * deltaTime;
-                gameScore += flightSpeed * 10;
-            }
-            else if (CurrentGameMode == GameMode.PlatformerGame)
-            {
-                float moveSpeed = 7.0f * deltaTime;
-                if (activeKeys.Contains(Keys.A) || activeKeys.Contains(Keys.Left)) playerShip.Position.X -= moveSpeed;
-                if (activeKeys.Contains(Keys.D) || activeKeys.Contains(Keys.Right)) playerShip.Position.X += moveSpeed;
-                if (activeKeys.Contains(Keys.W) || activeKeys.Contains(Keys.Up)) playerShip.Position.Z += moveSpeed;
-                if (activeKeys.Contains(Keys.S) || activeKeys.Contains(Keys.Down)) playerShip.Position.Z -= moveSpeed;
-                playerVelocityY -= 15.0f * deltaTime; playerShip.Position.Y += playerVelocityY * deltaTime;
-                if (activeKeys.Contains(Keys.Space) && isGrounded) { playerVelocityY = 7.5f; isGrounded = false; }
-                if (playerShip.Position.Y <= 0.6f) { playerShip.Position.Y = 0.6f; playerVelocityY = 0; isGrounded = true; }
-                camera.Position = new Vector3(playerShip.Position.X, playerShip.Position.Y + 3.0f, playerShip.Position.Z - 8.0f);
-                gameScore = playerShip.Position.Z * 10;
+                if (activeKeys.Contains(Keys.W) && CurrentViewTab != ViewTab.CodeEditor) editorCamera.Position += editorCamera.Forward * speed;
+                if (activeKeys.Contains(Keys.S) && CurrentViewTab != ViewTab.CodeEditor) editorCamera.Position -= editorCamera.Forward * speed;
+                if (activeKeys.Contains(Keys.A)) editorCamera.Position -= editorCamera.Right * speed;
+                if (activeKeys.Contains(Keys.D)) editorCamera.Position += editorCamera.Right * speed;
+                if (activeKeys.Contains(Keys.Q)) editorCamera.Position.Y += speed;
+                if (activeKeys.Contains(Keys.E)) editorCamera.Position.Y -= speed;
             }
         }
 
@@ -1489,40 +1963,65 @@ namespace SuperFXEngine
         {
             e.Graphics.Clear(Color.FromArgb(192, 192, 192));
             Rectangle vpRect = new Rectangle(330, 25, 740, 690);
-            e.Graphics.FillRectangle(Brushes.Black, vpRect);
-            DrawWin95Bevel(e.Graphics, vpRect, true);
 
-            renderer.Clear(Color.FromArgb(255, 12, 12, 32));
+            DrawWin95Button(e.Graphics, btnTablayout, "Layout", CurrentViewTab == ViewTab.Layout);
+            DrawWin95Button(e.Graphics, btnTabAnim, "Animation", CurrentViewTab == ViewTab.Animation);
+            DrawWin95Button(e.Graphics, btnTabCode, "Code Editor", CurrentViewTab == ViewTab.CodeEditor);
+            DrawWin95Button(e.Graphics, btnPlaytestPopup, "▶ Playtest Window", false);
 
-            // Render Onion Skin
-            if (onionSkinEnabled && currentFrame > 0 && selectedMesh != null)
+            if (CurrentViewTab != ViewTab.CodeEditor)
             {
-                Vector3 origPos = selectedMesh.Position;
-                Vector3 origRot = selectedMesh.Rotation;
-                Vector3 origScl = selectedMesh.Scale;
+                codeEditorTextBox.Visible = false;
+                e.Graphics.FillRectangle(Brushes.Black, vpRect);
+                DrawWin95Bevel(e.Graphics, vpRect, true);
 
-                currentClip.Evaluate(currentFrame - 1, out selectedMesh.Position, out selectedMesh.Rotation, out selectedMesh.Scale);
-                renderer.RenderMesh(selectedMesh, camera, Color.DarkSlateGray, 0.4f);
+                renderer.Clear(Color.FromArgb(255, 12, 12, 32));
 
-                selectedMesh.Position = origPos;
-                selectedMesh.Rotation = origRot;
-                selectedMesh.Scale = origScl;
+                if (CurrentViewTab == ViewTab.Animation && onionSkinEnabled && currentFrame > 0 && selectedMesh != null)
+                {
+                    Vector3 origPos = selectedMesh.Position;
+                    Vector3 origRot = selectedMesh.Rotation;
+                    Vector3 origScl = selectedMesh.Scale;
+
+                    currentClip.Evaluate(currentFrame - 1, out selectedMesh.Position, out selectedMesh.Rotation, out selectedMesh.Scale);
+                    renderer.RenderMesh(selectedMesh, editorCamera, Color.DarkSlateGray, 0.4f);
+
+                    selectedMesh.Position = origPos;
+                    selectedMesh.Rotation = origRot;
+                    selectedMesh.Scale = origScl;
+                }
+
+                foreach (var obj in worldObjects)
+                {
+                    if (obj != null) renderer.RenderMesh(obj, editorCamera);
+                }
+
+                if (CurrentGameMode == GameMode.Editor && selectedMesh != null && worldObjects.Count > 0 && selectedMesh != worldObjects[0])
+                {
+                    renderer.RenderGizmo(selectedMesh, editorCamera, CurrentTool, activeGizmoAxis, hoveredGizmoAxis, CurrentGizmoSpace);
+                }
+
+                Bitmap frame = renderer.GetFrameBitmap();
+                e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
+                e.Graphics.DrawImage(frame, vpRect.X, vpRect.Y, vpRect.Width, vpRect.Height);
+
+                if (CurrentViewTab == ViewTab.Animation)
+                {
+                    DrawAnimationWindow(e.Graphics);
+                }
             }
-
-            foreach (var obj in worldObjects) renderer.RenderMesh(obj, camera);
-
-            if (CurrentGameMode == GameMode.Editor && selectedMesh != null && selectedMesh != worldObjects[0])
+            else
             {
-                renderer.RenderGizmo(selectedMesh, camera, CurrentTool, activeGizmoAxis, hoveredGizmoAxis, CurrentGizmoSpace);
+                codeEditorTextBox.Visible = true;
+                using (Brush codeBg = new SolidBrush(Color.FromArgb(30, 30, 40)))
+                {
+                    e.Graphics.FillRectangle(codeBg, vpRect);
+                }
+                DrawWin95Bevel(e.Graphics, vpRect, true);
             }
-
-            Bitmap frame = renderer.GetFrameBitmap();
-            e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
-            e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
-            e.Graphics.DrawImage(frame, vpRect.X, vpRect.Y, vpRect.Width, vpRect.Height);
 
             Draw90sToolbox(e.Graphics);
-            DrawAnimationWindow(e.Graphics);
         }
 
         private void DrawAnimationWindow(Graphics g)
@@ -1548,11 +2047,10 @@ namespace SuperFXEngine
                 DrawWin95Button(g, btnSaveAnim, "Save...", false);
                 DrawWin95Button(g, btnLoadAnim, "Load...", false);
 
-                // Draw Timeline Track
                 g.FillRectangle(Brushes.White, timelineTrackRect);
                 DrawWin95Bevel(g, timelineTrackRect, true);
 
-                float frameWidth = (float)timelineTrackRect.Width / currentClip.TotalFrames;
+                float frameWidth = currentClip.TotalFrames > 0 ? (float)timelineTrackRect.Width / currentClip.TotalFrames : 1.0f;
                 int step = Math.Max(1, currentClip.TotalFrames / 6);
                 for (int i = 0; i <= currentClip.TotalFrames; i += step)
                 {
@@ -1561,15 +2059,16 @@ namespace SuperFXEngine
                     g.DrawString(i.ToString(), font, Brushes.Black, x - 10, timelineTrackRect.Top + 10);
                 }
 
-                // Draw Keyframes (◆)
-                foreach (var kf in currentClip.Keyframes)
+                if (currentClip.Keyframes != null)
                 {
-                    int kx = timelineTrackRect.Left + (int)(kf.FrameIndex * frameWidth);
-                    int ky = timelineTrackRect.Bottom - 16;
-                    g.FillRectangle(Brushes.Navy, kx - 3, ky - 3, 6, 6);
+                    foreach (var kf in currentClip.Keyframes)
+                    {
+                        int kx = timelineTrackRect.Left + (int)(kf.FrameIndex * frameWidth);
+                        int ky = timelineTrackRect.Bottom - 16;
+                        g.FillRectangle(Brushes.Navy, kx - 3, ky - 3, 6, 6);
+                    }
                 }
 
-                // Draw Playhead scrubber line
                 int playX = timelineTrackRect.Left + (int)(currentFrame * frameWidth);
                 g.DrawLine(Pens.Red, playX, timelineTrackRect.Top + 2, playX, timelineTrackRect.Bottom - 2);
                 g.DrawString($"Frame: {currentFrame}/{currentClip.TotalFrames}", boldFont, Brushes.Navy, timelineTrackRect.Right - 110, timelineTrackRect.Top + 4);
@@ -1586,7 +2085,6 @@ namespace SuperFXEngine
                 g.FillRectangle(bgBrush, toolboxRect);
                 DrawWin95Bevel(g, toolboxRect, false);
 
-                // 1. Gizmo Tools Group
                 DrawGroupBox(g, new Rectangle(14, 30, 287, 92), "EDIT & TRANSFORM GIZMOS");
                 DrawWin95Button(g, btnMove, "1. Move", CurrentTool == EditorTool.Move);
                 DrawWin95Button(g, btnRotate, "2. Rotate", CurrentTool == EditorTool.Rotate);
@@ -1596,7 +2094,6 @@ namespace SuperFXEngine
                 DrawWin95Button(g, btnDel, "6. Delete", CurrentTool == EditorTool.Delete);
                 DrawWin95Button(g, btnToggleSpace, $"Space: {CurrentGizmoSpace}", false);
 
-                // 2. Hierarchy & Parenting Group
                 DrawGroupBox(g, new Rectangle(14, 130, 287, 118), "SCENE HIERARCHY & PARENTING");
                 g.FillRectangle(Brushes.White, hierarchyBox);
                 DrawWin95Bevel(g, hierarchyBox, true);
@@ -1628,7 +2125,6 @@ namespace SuperFXEngine
                 DrawWin95Button(g, btnAttachChild, "Attach Child", false);
                 DrawWin95Button(g, btnUnparent, "Unparent", false);
 
-                // 3. Object Inspector Group
                 DrawGroupBox(g, new Rectangle(14, 256, 287, 82), "OBJECT INSPECTOR WINDOW");
                 g.FillRectangle(Brushes.White, inspectorBox);
                 DrawWin95Bevel(g, inspectorBox, true);
@@ -1656,28 +2152,30 @@ namespace SuperFXEngine
                     g.DrawString("Select an object in hierarchy", font, Brushes.Gray, inspectorBox.Left + 6, inspectorBox.Top + 26);
                 }
 
-                // 4. Texture Group
-                DrawGroupBox(g, new Rectangle(14, 346, 287, 42), "IMAGE FACE TEXTURE");
+                DrawGroupBox(g, new Rectangle(14, 346, 287, 38), "IMAGE FACE TEXTURE");
                 DrawWin95Button(g, btnLoadTex, LoadedImageTexture != null ? "Texture Loaded ✓" : "Load Image...", false);
                 DrawWin95Button(g, btnClearTex, "Clear Texture", false);
 
-                // 5. Spawn Primitives Group
-                DrawGroupBox(g, new Rectangle(14, 396, 287, 42), "SPAWN PRIMITIVES");
-                DrawWin95Button(g, btnSpawnCube, "Cube [C]", false);
-                DrawWin95Button(g, btnSpawnPyr, "Pyramid [P]", false);
-                DrawWin95Button(g, btnSpawnFighter, "Fighter [F]", false);
+                DrawGroupBox(g, scriptAttachBox, "POLONIUM SCRIPT (.pscript)");
+                bool scriptActive = selectedMesh != null && selectedMesh.ScriptEnabled;
+                DrawWin95Button(g, btnToggleScript, scriptActive ? "Script: Active ✓" : "Attach Script", scriptActive);
+                DrawWin95Button(g, btnOpenCodeView, "Open Code View", CurrentViewTab == ViewTab.CodeEditor);
 
-                // 6. Game Simulators Group
-                DrawGroupBox(g, new Rectangle(14, 444, 287, 42), "GAME SIMULATOR");
+                DrawGroupBox(g, new Rectangle(14, 460, 287, 60), "SPAWN ENTITIES");
+                DrawWin95Button(g, btnSpawnCube, "Cube", false);
+                DrawWin95Button(g, btnSpawnPyr, "Pyramid", false);
+                DrawWin95Button(g, btnSpawnFighter, "Fighter", false);
+                DrawWin95Button(g, btnSpawnCamera, "Spawn Camera Object", false);
+
+                DrawGroupBox(g, new Rectangle(14, 524, 287, 42), "GAME SIMULATOR");
                 DrawWin95Button(g, btnPlayEditor, "Editor [F1]", CurrentGameMode == GameMode.Editor);
                 DrawWin95Button(g, btnPlayFlight, "Flight [F2]", CurrentGameMode == GameMode.FlightGame);
                 DrawWin95Button(g, btnPlayPlatform, "Platform [F3]", CurrentGameMode == GameMode.PlatformerGame);
 
-                // 7. Palette Section
-                DrawGroupBox(g, new Rectangle(14, 494, 287, 52), "SUPER FX PALETTE");
+                DrawGroupBox(g, new Rectangle(14, 570, 287, 48), "SUPER FX PALETTE");
                 for (int i = 0; i < PaletteColors.Length; i++)
                 {
-                    int bx = 22 + (i % 8) * 33, by = 510 + (i / 8) * 18;
+                    int bx = 22 + (i % 8) * 33, by = 584 + (i / 8) * 18;
                     Rectangle colorBox = new Rectangle(bx, by, 28, 16);
                     using (Brush b = new SolidBrush(PaletteColors[i])) g.FillRectangle(b, colorBox);
                     if (PaletteColors[i].ToArgb() == CurrentPaintColor.ToArgb())
@@ -1685,15 +2183,17 @@ namespace SuperFXEngine
                     else DrawWin95Bevel(g, colorBox, false);
                 }
 
-                // 8. Console Log
-                DrawGroupBox(g, new Rectangle(14, 554, 287, 252), "CONSOLE LOG");
-                g.FillRectangle(Brushes.Black, 20, 570, 275, 226);
-                g.DrawString("SUPFX_OS v1.51 [Rotation Ring Balls Fixed]\n> Z-rotation ball snapped to Z-ring plane\n> Ready...", new Font("Consolas", 8), Brushes.LimeGreen, 24, 574);
+                DrawGroupBox(g, new Rectangle(14, 624, 287, 182), "CONSOLE LOG");
+                g.FillRectangle(Brushes.Black, 20, 640, 275, 160);
+                g.DrawString("SUPFX_OS v1.57.1 [Null-Safe Fix Added]\n> Added defensive checks for meshes,\n  cameras, and triangles to prevent\n  NullReferenceException.", new Font("Consolas", 8), Brushes.LimeGreen, 24, 644);
 
                 Rectangle statusRect = new Rectangle(0, ClientSize.Height - 22, ClientSize.Width, 22);
-                g.FillRectangle(bgBrush, statusRect);
+                using (Brush bg = new SolidBrush(Color.FromArgb(192, 192, 192)))
+                {
+                    g.FillRectangle(bg, statusRect);
+                }
                 g.DrawLine(Pens.White, 0, ClientSize.Height - 22, ClientSize.Width, ClientSize.Height - 22);
-                string statusText = isGizmoDragging ? $"Mode: {CurrentGameMode} | GRAB ACTIVE ({activeGizmoAxis}-Axis - {CurrentGizmoSpace})" : $"Mode: {CurrentGameMode} | Tool: {CurrentTool} | Space: {CurrentGizmoSpace}";
+                string statusText = isGizmoDragging ? $"Mode: {CurrentGameMode} | GRAB ACTIVE ({activeGizmoAxis}-Axis - {CurrentGizmoSpace})" : $"Tab: {CurrentViewTab} | Mode: {CurrentGameMode} | Tool: {CurrentTool}";
                 g.DrawString(statusText, font, Brushes.Black, 10, ClientSize.Height - 19);
             }
         }
@@ -1760,15 +2260,15 @@ namespace SuperFXEngine
         {
             Form prompt = new Form()
             {
-                Width = 280,
-                Height = 150,
+                Width = 320,
+                Height = 180,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 Text = caption,
                 StartPosition = FormStartPosition.CenterScreen
             };
-            Label textLabel = new Label() { Left = 20, Top = 15, Text = text, Width = 220 };
-            TextBox textBox = new TextBox() { Left = 20, Top = 40, Width = 220, Text = defaultValue };
-            Button confirmation = new Button() { Text = "OK", Left = 160, Width = 80, Top = 70, DialogResult = DialogResult.OK };
+            Label textLabel = new Label() { Left = 20, Top = 15, Text = text, Width = 260 };
+            TextBox textBox = new TextBox() { Left = 20, Top = 40, Width = 260, Height = 40, Text = defaultValue, Multiline = true, ScrollBars = ScrollBars.Vertical };
+            Button confirmation = new Button() { Text = "OK", Left = 200, Width = 80, Top = 100, DialogResult = DialogResult.OK };
             prompt.Controls.Add(textBox);
             prompt.Controls.Add(confirmation);
             prompt.Controls.Add(textLabel);
